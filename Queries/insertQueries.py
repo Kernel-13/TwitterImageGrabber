@@ -58,7 +58,7 @@ def error(tweet_author, status, error_code):
 def like(Tweet, like_owner):
 	values = [Tweet.author.screen_name]
 	values.append(Tweet.id)
-	values.append(like_owner.screen_name.lower())
+	values.append(like_owner.lower())
 	values.append(Tweet.created_at)
 	values.append(Tweet.text)
 

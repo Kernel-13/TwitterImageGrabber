@@ -5,16 +5,16 @@ Created on 2 Apr 2018
 @author: Kernel-13
 '''
 
-import requests
 import sys
 import os
-import tweepy
 import time
 import json
-import winsound
+import tweepy
 import sqlite3
 import logging
+import requests
 import argparse
+import winsound
 
 import Queries.insertQueries as IQ
 import Queries.selectQueries as SQ
@@ -64,10 +64,10 @@ def id_queue(action):
 			elif action == "like": 		
 				api.create_favorite(tweet_id)
 				tweet = api.get_status(tweet_id)
-				IQ.like(tweet, authenticated_user)
+				IQ.like(tweet, authenticated_user.screen_name)
 			elif action == "dislike":	
 				api.destroy_favorite(tweet_id)
-				db_operations.remove_like(tweet_id, authenticated_user)
+				UQ.remove_like(tweet_id, authenticated_user.screen_name)
 
 			print("\tID: {} - Operation: {} - Status: Success".format(tweet_id, action.upper()))
 
@@ -146,7 +146,7 @@ def update_all():
 			raise
 
 		if update_db and db_new_last_id != '0' and db_new_lookup != '':
-			db_operations.update_user(user, db_new_last_id, db_new_lookup)
+			UQ.update_user(user, tweet_id=db_new_last_id, tweet_date=db_new_lookup)
 			db_new_last_id = '0'
 			db_new_lookup = ''
 		print()
@@ -195,7 +195,7 @@ def retry_non_active():
 
 				last_known_id = SQ.get_user(str(user))[0][2]
 				last_known_tweet = lookup_tweet(last_known_id)
-				db_operations.rename_user(str(user), last_known_tweet.author.screen_name, ' '.join(sys.argv)[:97]+'...', Options.forced)
+				UQ.rename_user(str(user), last_known_tweet.author.screen_name, ' '.join(sys.argv)[:97]+'...', Options.forced)
 				fetch_tweets(str(last_known_tweet.author.screen_name))
 
 				print(f'         ====> User [ {user} ] changed its name to [ {last_known_tweet.author.screen_name} ]')
@@ -213,10 +213,10 @@ def retry_non_active():
 		username = user.lower()
 
 		if update_db:
-			db_operations.update_user_status(user,'Active')
+			UQ.update_user(user, status='Active')
 			print('     =====> Changed status to Active')
 			if db_new_last_id != '0' and db_new_lookup != '':
-				db_operations.update_user(user,db_new_last_id,db_new_lookup)
+				UQ.update_user(user, tweet_id=db_new_last_id, tweet_date=db_new_lookup)
 			db_new_last_id = '0'
 			db_new_lookup = ''
 
@@ -318,7 +318,7 @@ def user_timeline(username='', last_id=None):
 		print ('    For more info about this error, check https://developer.twitter.com/en/docs/basics/response-codes')
 
 		if SQ.get_user(username) is not None: 
-			db_operations.update_user_status(username,'Not Accessible')
+			UQ.update_user(username, status='Not Accessible')
 			try:
 				IQ.error(username, 'Not Accessible', str(e.args[0][0]['code']))
 			except:
@@ -385,7 +385,7 @@ def process_tweet(twt, save_folder,local_dups_count):
 			date = twt.created_at.strftime('%Y-%m-%d %X')
 		
 		if hasattr(twt, "extended_entities"):
-			if Options.check_table and db_operations.already_downloaded(twt.id):
+			if Options.check_table and SQ.already_downloaded(twt.id):
 				if Options.dup_info: print(f'          # Already in table: {twt.author.screen_name} {twt.id_str}')
 				logging.info(f'          Already downloaded: {twt.author.screen_name} {twt.id_str}')
 				local_dups_count[0] += 1
@@ -454,7 +454,7 @@ def process_tweet(twt, save_folder,local_dups_count):
 					save_file(file_path, content, date, Options, local_dups_count)
 					media_count += 1  
 
-				if db_operations.already_downloaded(twt.id):
+				if SQ.already_downloaded(twt.id):
 					if len(' '.join(sys.argv)) > 100:   
 						IQ.download(twt, ' '.join(sys.argv)[:97]+'...')
 					else: 
@@ -546,12 +546,13 @@ def main():
 		if Options.update_all:					update_all()
 		if Options.check_again is not None:		retry_non_active()
 		if Options.my_timeline:					fetch_tweets()
+
 		if Options.user_timeline is not None:
 			fetch_tweets(Options.user_timeline[0])
 			if SQ.get_user(Options.user_timeline[0]) is not None and db_new_last_id != '0' and db_new_lookup != '':
 				user = SQ.get_user(Options.user_timeline[0])
-				db_operations.update_user(Options.user_timeline[0],db_new_last_id,db_new_lookup)
-				if user[0][1] != 'Active': db_operations.update_user_status(Options.user_timeline[0],'Active')
+				UQ.update_user(Options.user_timeline[0], tweet_id=db_new_last_id, tweet_date=db_new_lookup)
+				if user[0][1] != 'Active': UQ.update_user(Options.user_timeline[0], status='Active')
 			elif SQ.get_user(Options.user_timeline[0]) is None:
 				IQ.user(Options.user_timeline[0],db_new_last_id,db_new_lookup)
 			print('\nDatabase updated!')
@@ -560,23 +561,22 @@ def main():
 	except TimeoutError:		print('\nClosing due to TimeoutError\n')
 	except:						logging.exception("Unknown Error at the end of MAIN")
 
-	if Options.print_already_downloaded_text:	db_operations.print_downloaded_with_text() 
-	if Options.print_already_downloaded:		PQ.downloaded_tweets(include_command=True) 
-	if Options.print_renamed:					PQ.renamed_users(include_command=True)
-	if Options.print_deleted:					PQ.deleted_users()
-	if Options.print_errors:					PQ.errors()
-	if Options.print_users is not None:			PQ.users(Options.print_users[0]) 
-	if Options.print_likes is not None:			PQ.likes(Options.print_likes[0])
+	if Options.print_downloads_:		PQ.downloaded_tweets(include_command=True)
+	if Options.print_downloads:			PQ.downloaded_tweets(include_command=False) 
+	if Options.print_renamed:			PQ.renamed_users(include_command=True)
+	if Options.print_deleted:			PQ.deleted_users()
+	if Options.print_errors:			PQ.errors()
+	if Options.print_users is not None:	PQ.users(Options.print_users[0]) 
+	if Options.print_likes is not None:	PQ.likes(Options.print_likes[0])
 
 	if Options.add_user is not None:			IQ.user(user=Options.add_user[0])
-	if Options.remove_user is not None:			db_operations.delete_user(Options.remove_user[0])
-	if Options.rename_user is not None:			db_operations.rename_user(Options.rename_user[0], Options.rename_user[1], ' '.join(sys.argv)[:97]+'...', Options.forced)
-	if Options.fuse_users is not None:			db_operations.fuse_users(Options.fuse_users[0], Options.fuse_users[1])
-	if Options.update_status is not None:		db_operations.update_user_status(Options.update_status[0], Options.update_status[1])
-	if Options.rescan_user is not None:			db_operations.rescan_user(Options.rescan_user[0])
-	if Options.rescan_all:						db_operations.rescan_all()    
+	if Options.remove_user is not None:			UQ.delete_user(Options.remove_user[0])
+	if Options.rename_user is not None:			UQ.rename_user(Options.rename_user[0], Options.rename_user[1], ' '.join(sys.argv)[:97]+'...', Options.forced)
+	if Options.fuse_users is not None:			UQ.fuse_users(Options.fuse_users[0], Options.fuse_users[1])
+	if Options.update_status is not None:		UQ.update_user(Options.update_status[0], status=Options.update_status[1])
+	#if Options.rescan_user is not None:		db_operations.rescan_user(Options.rescan_user[0])
+	#if Options.rescan_all:						db_operations.rescan_all()    
 
-	db_operations.conn.close()  
 	print('\nClosing...\n')
 	
 	print(f'\tFetched {fetched_tweets} tweets')
@@ -639,8 +639,8 @@ if __name__== "__main__":
 	parser.add_argument('--into', help="When providing a valid path, the script will proceed to download all media into the specified folder path", nargs=1, metavar=('FOLDER_PATH'))
 	parser.add_argument('--split', action='store_true', help=argparse.SUPPRESS)
 	parser.add_argument('--check_table', action='store_true', help=argparse.SUPPRESS)
-	parser.add_argument('--print_already_downloaded', action='store_true', help=argparse.SUPPRESS)
-	parser.add_argument('--print_already_downloaded_text', action='store_true', help=argparse.SUPPRESS)
+	parser.add_argument('--print_downloads', action='store_true', help=argparse.SUPPRESS)
+	parser.add_argument('--print_downloads_text', action='store_true', help=argparse.SUPPRESS)
 	parser.add_argument('--store_in_tmp', action='store_true', help=argparse.SUPPRESS)
 	parser.add_argument('--time', nargs=1, type=int, metavar=('SECONDS'), help=argparse.SUPPRESS)
 
@@ -655,12 +655,11 @@ if __name__== "__main__":
 	parser.add_argument('--rename_user', help='Renames the specified user from the database (and renames the files in their folder)',nargs=2, metavar=('OLD_NAME', 'NEW_NAME'))
 	parser.add_argument('--fuse_users', help='Renames the specified user from the database (and renames the files in their folder)',nargs=2, metavar=('OLD_NAME', 'NEW_NAME'))
 	parser.add_argument('--update_status', help='Changes the status of the specified user',nargs=2, metavar=('USER_NAME', 'NEW_STATUS'))
-	parser.add_argument('--rescan_user', help='Scans the user folder in order to update its Last_id field in the database.',nargs=1, metavar=('USER_NAME'))
-	parser.add_argument('--rescan_all', help="Scans all users' folders in order to update their Last_id field in the database.", action='store_true')
+	#parser.add_argument('--rescan_user', help='Scans the user folder in order to update its Last_id field in the database.',nargs=1, metavar=('USER_NAME'))
+	#parser.add_argument('--rescan_all', help="Scans all users' folders in order to update their Last_id field in the database.", action='store_true')
 	parser.add_argument('--forced', help="", action='store_true')
 	parser.add_argument('--check_again', help='Tries to download media from those users whose status match with the one provided',nargs=1, metavar=('STATUS'))
 
-	Options = None
 	Options = parser.parse_args()
 
 	main()

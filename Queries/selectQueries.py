@@ -20,7 +20,7 @@ def get_user_list(status):
 	rows = db.query(statement, fetchall=True)
 	db.close()
 
-	return [row[0].lower() for row in rows]
+	return [row[0] for row in rows]
 
 def already_downloaded(tweet_id):
 	db = DB.database()
