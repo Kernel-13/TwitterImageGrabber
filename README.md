@@ -1,5 +1,7 @@
 # TwitterImageGrabber
 
+Work in progress
+
 ```
 Usage:
     TwitterImageGrabber.py --keys <credentials_file> --user-timeline <user> [--no-retweets] [--no-replies] [--max-dups N] [--no-video] [--no-image] [--no-dups]
