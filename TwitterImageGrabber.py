@@ -64,7 +64,7 @@ def id_queue(action):
 			elif action == "like": 		
 				api.create_favorite(tweet_id)
 				tweet = api.get_status(tweet_id)
-				db_operations.insert_like(tweet, authenticated_user)
+				IQ.like(tweet, authenticated_user)
 			elif action == "dislike":	
 				api.destroy_favorite(tweet_id)
 				db_operations.remove_like(tweet_id, authenticated_user)
@@ -94,102 +94,6 @@ def id_queue(action):
 			logging.info("\t\tError with ID: {} ---> {}".format(err[0], err[1]))
 		logging.info("\tNº of failed {}s: {}\n".format(action, len(error_list)))
 
-'''
-def retweet():
-	logging.info("  Queue: {}\n".format(' '.join(Options.retweet)))
-	logging.info("  Queue Size: {}\n".format(len(Options.retweet)))
-	logging.info("  Failed retweets (if any) will be listed below")
-	fail_count = 0
-
-	for tweet in Options.retweet:
-		try:
-			api.retweet(tweet)
-			print("Tweet with id {} retweeted successfully!".format(tweet))
-
-		except tweepy.error.TweepError as err:
-			fail_count += 1
-			print ("Error with ID: {} ---> {}".format(tweet, err.response.json()['errors'][0]['message']))
-			logging.info("  Error with ID: {} ---> {}".format(tweet, err.response.json()['errors'][0]['message']))
-
-		time.sleep(Options.time[0])
-
-	if fail_count > 0:
-		print("Errors occurred while processing some ({}) tweets. Check the log file for more information".format(fail_count))
-		logging.info("  Nº of failed retweets: {}\n".format(fail_count))
-
-def unretweet():
-	logging.info("  Queue: {}\n".format(' '.join(Options.retweet)))
-	logging.info("  Queue Size: {}\n".format(len(Options.retweet)))
-	logging.info("  Failed unretweets (if any) will be listed below")
-	fail_count = 0
-
-	for tweet in Options.unretweet:
-		try:
-			api.unretweet(tweet)
-			print("Tweet with id {} retweeted successfully!".format(tweet))
-
-		except tweepy.error.TweepError as err:
-			fail_count += 1
-			print ("Error with ID: {} ---> {}".format(tweet, err.response.json()['errors'][0]['message']))
-			logging.info("  Error with ID: {} ---> {}".format(tweet, err.response.json()['errors'][0]['message']))
-
-		time.sleep(Options.time[0])
-
-	if fail_count > 0:
-		print("Errors occurred while processing some ({}) tweets. Check the log file for more information".format(fail_count))
-		logging.info("  Nº of failed unretweets: {}\n".format(fail_count))
-
-def like():
-	logging.info("  Queue: {}\n".format(' '.join(Options.like)))
-	logging.info("  Queue Size: {}\n".format(len(Options.like)))
-	logging.info("  Failed likes (if any) will be listed below")
-	fail_count = 0
-
-	for tweet in Options.like:
-		try:
-			api.create_favorite(tweet)
-			print(f"Tweet with id {tweet} liked successfully!")
-			db_operations.insert_like(api.get_status(tweet), authenticated_user)
-
-		except tweepy.error.TweepError as err:
-			fail_count += 1
-			print ("Error with ID: {} ---> {}".format(tweet, err.response.json()['errors'][0]['message']))
-			logging.info("  Error with ID: {} ---> {}".format(tweet, err.response.json()['errors'][0]['message']))
-
-		except sqlite3.IntegrityError as err:
-			logging.info("")
-
-		time.sleep(Options.time[0]) 
-
-	if fail_count > 0: 
-		print("Errors occurred while processing some ({}) tweets. Check the log file for more information".format(fail_count))
-		logging.info("  Nº of failed likes: {}\n".format(fail_count))
-
-def dislike():
-	logging.info("  Queue: {}\n".format(' '.join(Options.like)))
-	logging.info("  Queue Size: {}\n".format(len(Options.like)))
-	logging.info("  Failed dislikes (if any) will be listed below")
-	fail_count = 0
-
-	for tweet in Options.dislike:
-		try:
-			api.destroy_favorite(tweet)
-			print(f"Tweet with id {tweet} disliked successfully!")
-
-		except tweepy.error.TweepError as err:
-			fail_count += 1
-			print ("Error with ID: {} ---> {}".format(tweet, err.response.json()['errors'][0]['message']))
-			logging.info("  Error with ID: {} ---> {}".format(tweet, err.response.json()['errors'][0]['message']))
-
-		except sqlite3.IntegrityError as err:
-			logging.info("")
-
-		time.sleep(Options.time[0]) 
-
-	if fail_count > 0: 
-		print("Errors occurred while processing some ({}) tweets. Check the log file for more information".format(fail_count))
-		logging.info("  Nº of failed dislikes: {}\n".format(fail_count))
-'''
 ### FUNCTIONS THAT ITERATE OVER THE USERS IN THE DATABASE ###
 
 def update_all():
@@ -197,14 +101,14 @@ def update_all():
 	global db_new_last_id
 	global db_new_lookup
 
-	user_list = db_operations.get_user_list('Active')
+	user_list = SQ.get_user_list('Active')
 
 	# To resume update after the program crashes unexpectedly 
 	try: 
 		start_idx = user_list.index(Options.start_at[0].lower()) if Options.start_at is not None else 0
 
 	except ValueError as err: 
-		user = db_operations.get_user(Options.start_at[0])
+		user = SQ.get_user(Options.start_at[0])
 		if user is None:
 			print("\tERROR: User '{}' is not in the database!".format(Options.start_at[0]))
 		else:
@@ -251,11 +155,11 @@ def update_all():
 def retry_non_active():
 	global error_code
 
-	if Options.check_again[0].lower().startswith('p'):     user_list = db_operations.get_user_list('Protected')
-	elif Options.check_again[0].lower().startswith('s'):   user_list = db_operations.get_user_list('Suspended')
-	elif Options.check_again[0].lower().startswith('d'):   user_list = db_operations.get_user_list('Deleted')
-	elif Options.check_again[0].lower().startswith('n'):   user_list = db_operations.get_user_list('Not Accessible')
-	else:   user_list = db_operations.get_user_list('x')
+	if Options.check_again[0].lower().startswith('p'):     user_list = SQ.get_user_list('Protected')
+	elif Options.check_again[0].lower().startswith('s'):   user_list = SQ.get_user_list('Suspended')
+	elif Options.check_again[0].lower().startswith('d'):   user_list = SQ.get_user_list('Deleted')
+	elif Options.check_again[0].lower().startswith('n'):   user_list = SQ.get_user_list('Not Accessible')
+	else:   user_list = SQ.get_user_list('x')
 
 	update_db = True
 
@@ -285,11 +189,11 @@ def retry_non_active():
 			if error_code == 34:
 
 				error_code = 0
-				db_operations.insert_error_history(str(user), 'Not Accessible', '34')
+				IQ.error(str(user), 'Not Accessible', '34')
 				print(f'\n       --- Checking for new name of {user}')
 				logging.info(f"          Checking for new name of {user}")
 
-				last_known_id = db_operations.get_user(str(user))[0][2]
+				last_known_id = SQ.get_user(str(user))[0][2]
 				last_known_tweet = lookup_tweet(last_known_id)
 				db_operations.rename_user(str(user), last_known_tweet.author.screen_name, ' '.join(sys.argv)[:97]+'...', Options.forced)
 				fetch_tweets(str(last_known_tweet.author.screen_name))
@@ -413,12 +317,12 @@ def user_timeline(username='', last_id=None):
 			logging.info(f" ### Error Message -- {e.args[0]}")
 		print ('    For more info about this error, check https://developer.twitter.com/en/docs/basics/response-codes')
 
-		if db_operations.get_user(username) is not None: 
+		if SQ.get_user(username) is not None: 
 			db_operations.update_user_status(username,'Not Accessible')
 			try:
-				db_operations.insert_error_history(username, 'Not Accessible', str(e.args[0][0]['code']))
+				IQ.error(username, 'Not Accessible', str(e.args[0][0]['code']))
 			except:
-				db_operations.insert_error_history(username, 'Not Accessible', 'Unknown')
+				IQ.error(username, 'Not Accessible', 'Unknown')
 		if Options.update_all or Options.check_again is not None:   raise uncommon_twitter_exception
 
 		os._exit(1)
@@ -481,7 +385,7 @@ def process_tweet(twt, save_folder,local_dups_count):
 			date = twt.created_at.strftime('%Y-%m-%d %X')
 		
 		if hasattr(twt, "extended_entities"):
-			if Options.check_table and db_operations.already_downloaded(twt.id) is not None:
+			if Options.check_table and db_operations.already_downloaded(twt.id):
 				if Options.dup_info: print(f'          # Already in table: {twt.author.screen_name} {twt.id_str}')
 				logging.info(f'          Already downloaded: {twt.author.screen_name} {twt.id_str}')
 				local_dups_count[0] += 1
@@ -529,7 +433,7 @@ def process_tweet(twt, save_folder,local_dups_count):
 					file_name = f"{twt.author.screen_name} {twt.id_str} [{media_count}].{file_extension}"
 
 					if Options.save_to_user_folder:
-						if db_operations.get_user(twt.author.screen_name) is not None:   file_path = os.getcwd() + '\\' + twt.author.screen_name + '\\' + file_name
+						if SQ.get_user(twt.author.screen_name) is not None:   file_path = os.getcwd() + '\\' + twt.author.screen_name + '\\' + file_name
 						elif Options.only_db:   break
 						else:   file_path = save_folder + '\\' + file_name
 					else:
@@ -542,7 +446,7 @@ def process_tweet(twt, save_folder,local_dups_count):
 								not_db_path = Options.into[0] + '\\' + 'NOT_IN_DB'
 								os.makedirs(db_path, exist_ok=True)
 								os.makedirs(not_db_path, exist_ok=True)
-								if db_operations.get_user(twt.author.screen_name) is not None:   file_path = db_path + '\\'+ file_name
+								if SQ.get_user(twt.author.screen_name) is not None:   file_path = db_path + '\\'+ file_name
 								else:   file_path = not_db_path + '\\' + file_name
 							else:
 								file_path = Options.into[0] + '\\' + file_name
@@ -550,9 +454,11 @@ def process_tweet(twt, save_folder,local_dups_count):
 					save_file(file_path, content, date, Options, local_dups_count)
 					media_count += 1  
 
-				if db_operations.already_downloaded(twt.id) is None:
-					if len(' '.join(sys.argv)) > 100:   db_operations.insert_download(twt, ' '.join(sys.argv)[:97]+'...')
-					else: db_operations.insert_download(twt, ' '.join(sys.argv))
+				if db_operations.already_downloaded(twt.id):
+					if len(' '.join(sys.argv)) > 100:   
+						IQ.download(twt, ' '.join(sys.argv)[:97]+'...')
+					else: 
+						IQ.download(twt, ' '.join(sys.argv))
 					logging.info(f'          ---> Added to the table: {twt.id_str}')
 		else:
 			print(twt._json['id'], "has no extended_entities => Can't be downloaded")
@@ -586,7 +492,7 @@ def save_file(file_path, data, date, Options, local_dups_count):
 		if Options.store_in_tmp:
 			db_path = 'D:' + '\\' + 'TEMP' + '\\' + 'IN_DB'
 			not_db_path = 'D:' + '\\' + 'TEMP' + '\\' + 'NOT_IN_DB'
-			if db_operations.get_user(filename.split(' ')[0]) is not None:   file_path = db_path + '\\'+ filename
+			if SQ.get_user(filename.split(' ')[0]) is not None:   file_path = db_path + '\\'+ filename
 			else:   file_path = not_db_path + '\\' + filename
 
 			try:
@@ -642,12 +548,12 @@ def main():
 		if Options.my_timeline:					fetch_tweets()
 		if Options.user_timeline is not None:
 			fetch_tweets(Options.user_timeline[0])
-			if db_operations.get_user(Options.user_timeline[0]) is not None and db_new_last_id != '0' and db_new_lookup != '':
-				user = db_operations.get_user(Options.user_timeline[0])
+			if SQ.get_user(Options.user_timeline[0]) is not None and db_new_last_id != '0' and db_new_lookup != '':
+				user = SQ.get_user(Options.user_timeline[0])
 				db_operations.update_user(Options.user_timeline[0],db_new_last_id,db_new_lookup)
 				if user[0][1] != 'Active': db_operations.update_user_status(Options.user_timeline[0],'Active')
-			elif db_operations.get_user(Options.user_timeline[0]) is None:
-				db_operations.insert_new_user(Options.user_timeline[0],db_new_last_id,db_new_lookup)
+			elif SQ.get_user(Options.user_timeline[0]) is None:
+				IQ.user(Options.user_timeline[0],db_new_last_id,db_new_lookup)
 			print('\nDatabase updated!')
 
 	except KeyboardInterrupt:	logging.info('\t\tSIGINT detected -- Stopping script')
@@ -655,14 +561,14 @@ def main():
 	except:						logging.exception("Unknown Error at the end of MAIN")
 
 	if Options.print_already_downloaded_text:	db_operations.print_downloaded_with_text() 
-	if Options.print_already_downloaded:		PQ.downloaded_tweets(db_operations.cursor, include_command=True) 
-	if Options.print_renamed:					PQ.renamed_users(db_operations.cursor, include_command=True)
-	if Options.print_deleted:					PQ.deleted_users(db_operations.cursor)
-	if Options.print_errors:					PQ.errors(db_operations.cursor)
-	if Options.print_users is not None:			PQ.users(db_operations.cursor, Options.print_users[0]) 
-	if Options.print_likes is not None:			PQ.likes(db_operations.cursor, Options.print_likes[0])
+	if Options.print_already_downloaded:		PQ.downloaded_tweets(include_command=True) 
+	if Options.print_renamed:					PQ.renamed_users(include_command=True)
+	if Options.print_deleted:					PQ.deleted_users()
+	if Options.print_errors:					PQ.errors()
+	if Options.print_users is not None:			PQ.users(Options.print_users[0]) 
+	if Options.print_likes is not None:			PQ.likes(Options.print_likes[0])
 
-	if Options.add_user is not None:			db_operations.insert_new_user(user=Options.add_user[0])
+	if Options.add_user is not None:			IQ.user(user=Options.add_user[0])
 	if Options.remove_user is not None:			db_operations.delete_user(Options.remove_user[0])
 	if Options.rename_user is not None:			db_operations.rename_user(Options.rename_user[0], Options.rename_user[1], ' '.join(sys.argv)[:97]+'...', Options.forced)
 	if Options.fuse_users is not None:			db_operations.fuse_users(Options.fuse_users[0], Options.fuse_users[1])
