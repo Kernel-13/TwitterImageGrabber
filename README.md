@@ -1,6 +1,6 @@
-# TwitterImageGrabber
+# TwitterImageGrabber (Work In Progress)
 
-Work in progress
+
 
 ```
 Usage:
