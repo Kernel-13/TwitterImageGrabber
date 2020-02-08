@@ -14,4 +14,6 @@ te.py
 test.py
 alins.json
 TIG_commands_history.txt
-*.txt
+______LOGS______/
+_____SEARCH_____/
+_____SINGLE_____/
