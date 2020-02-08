@@ -1,12 +1,13 @@
 import time
 import logging
+import Queries.Exceptions
 import Queries.DBConnection as DB
 import Queries.selectQueries as SQ
 
 def user(user, last_id=None, last_lookup=None):
 
 	if SQ.get_user(user):
-		print("\t\t### ERROR ### -- User [ {} ] already exists!".format(user))
+		Queries.Exceptions.print_error("### ERROR ### -- User [ {} ] already exists!".format(user))
 		return
 
 	values = [user.lower()]
@@ -18,7 +19,7 @@ def user(user, last_id=None, last_lookup=None):
 	db.query(statement="INSERT INTO TWITTER_USERS VALUES(?,?,?,?)", values=tuple(values), commit=True)
 	db.close()
 	
-	print('\nAdded [ {} ] to the database'.format(user))
+	Queries.Exceptions.print_info('Added user [ {} ] to the database'.format(user))
 
 def download(tweet, command):
 	values = [tweet.author.screen_name]
@@ -52,6 +53,8 @@ def error(tweet_author, status, error_code):
 		values.append(time.strftime('%Y-%m-%d %X', time.localtime()))
 		values.append(tweet_author.lower())
 		db.query(statement="UPDATE ERRORS_HISTORY SET STATUS = ?, ERROR_CODE = ?, DATE_ERROR = ? WHERE lower(TWEET_AUTHOR) = ?", values=tuple(values), commit=True)
+
+	logging.critical("User [ {} ] is not accessible anymore: The account is now {}".format(tweet_author, status))
 
 	db.close()
 

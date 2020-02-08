@@ -2,7 +2,7 @@ import sqlite3
 
 class database():
 
-	def __init__(self, database_name='..\\TwitterMediaGrabber.db'):
+	def __init__(self, database_name='TwitterMediaGrabber.db'):
 		self.conn = sqlite3.connect(database_name)
 		self.cursor = self.conn.cursor()
 

@@ -15,61 +15,47 @@ import logging
 import requests
 import argparse
 import winsound
+from math import ceil
 
 import Queries.insertQueries as IQ
 import Queries.selectQueries as SQ
 import Queries.updateQueries as UQ
 import Queries.printQueries as PQ
+import Queries.Exceptions as MsgPrinter
 
-auth = None
-api = None
-authenticated_user = None
-Options = None
+API = None
+AUTHENTICATED_USER = None
+OPTIONS = None
 
-db_new_user = ''
-db_new_last_id = '0'
-db_new_lookup = ''
-error_code = 0
+DUPES_COUNT = 0
+FILE_COUNT = 0
+FETCHED_TWEETS_COUNT = 0
 
-dups_count = 0
-file_count = 0
-fetched_tweets = 0
-start_time = time.time()        #Change to time.localtime()
-error_at_checking_user = False
+COMMAND_ARGUMENTS = ' '.join(sys.argv)
 
-class finished_folder_update(Exception):
-	pass
-
-class uncommon_twitter_exception(Exception):
-	pass
-
-### FUNCTIONS THAT WORK WITH ID QUEUES ### [Merge All]
+#print(json.dumps(tweet._json, sort_keys=True, indent=4))
 
 def id_queue(action):
 	
-	if action == "like": 		queue = Options.like
-	elif action == "dislike": 	queue = Options.dislike
-	elif action == "retweet": 	queue = Options.retweet
-	elif action == "unretweet": queue = Options.unretweet
+	if action == "like": 		queue = OPTIONS.like
+	elif action == "dislike": 	queue = OPTIONS.dislike
+	elif action == "retweet": 	queue = OPTIONS.retweet
+	elif action == "unretweet": queue = OPTIONS.unretweet
 
-	logging.info("\tQueue: {}\n".format(' '.join(queue)))
-	logging.info("\tQueue Size: {}\n".format(len(queue)))
-	error_list = []
+	logging.info("Queue Size: {}\n".format(len(queue)))
 
 	for tweet_id in queue:
 		try:
 
-			if action == "retweet":		api.retweet(tweet_id)
-			elif action == "unretweet":	api.unretweet(tweet_id)
+			if action == "retweet":		API.retweet(tweet_id)
+			elif action == "unretweet":	API.unretweet(tweet_id)
 			elif action == "like": 		
-				api.create_favorite(tweet_id)
-				tweet = api.get_status(tweet_id)
-				IQ.like(tweet, authenticated_user.screen_name)
+				API.create_favorite(tweet_id)
+				tweet = API.get_status(tweet_id)
 			elif action == "dislike":	
-				api.destroy_favorite(tweet_id)
-				UQ.remove_like(tweet_id, authenticated_user.screen_name)
+				API.destroy_favorite(tweet_id)
 
-			print("\tID: {} - Operation: {} - Status: Success".format(tweet_id, action.upper()))
+			MsgPrinter.print_info("ID: {} - Operation: {} - Status: Success".format(tweet_id, action.upper()))
 
 		except tweepy.error.TweepError as err:
 
@@ -78,534 +64,516 @@ def id_queue(action):
 			else:
 				error_message = err.response.json()['errors'][0]['message']
 
-			print ("\tError with ID: {} ---> {} (Operation: {})".format(tweet_id, error_message, action.upper()))
-			error_list.append((tweet_id, error_message))
+			MsgPrinter.print_error("ID: {} ---> {} (Operation: {})".format(tweet_id, error_message, action.upper()))
 
-		except sqlite3.IntegrityError as err:
-			logging.info("\tIntegrityError")
-			print(err)
+		else:
+			try:
+				if action == "like":
+					IQ.like(tweet, AUTHENTICATED_USER.screen_name)
+				elif action == "dislike":
+					UQ.remove_like(tweet_id, AUTHENTICATED_USER.screen_name)
 
-		time.sleep(Options.time[0]) 
+			except sqlite3.IntegrityError as err:
+				logging.error("IntegrityError: ID {} already in LIKED_TWEETS")
 
-	if error_list:
-		print("\n\tErrors occurred while processing some ({}) tweets. Check the log file for more information".format(len(error_list)))
-		logging.info("\t### Errors ###")
-		for err in error_list:
-			logging.info("\t\tError with ID: {} ---> {}".format(err[0], err[1]))
-		logging.info("\tNº of failed {}s: {}\n".format(action, len(error_list)))
-
-### FUNCTIONS THAT ITERATE OVER THE USERS IN THE DATABASE ###
+		time.sleep(OPTIONS.time[0]) 
 
 def update_all():
-	update_db = True
-	global db_new_last_id
-	global db_new_lookup
 
 	user_list = SQ.get_user_list('Active')
 
-	# To resume update after the program crashes unexpectedly 
-	try: 
-		start_idx = user_list.index(Options.start_at[0].lower()) if Options.start_at is not None else 0
+	try:
+		start_idx = user_list.index(OPTIONS.start_at_user[0].lower()) if OPTIONS.start_at_user else 0
 
-	except ValueError as err: 
-		user = SQ.get_user(Options.start_at[0])
-		if user is None:
-			print("\tERROR: User '{}' is not in the database!".format(Options.start_at[0]))
+	except ValueError: 
+		user = SQ.get_user(OPTIONS.start_at_user[0])
+
+		if user:
+			MsgPrinter.print_error("User [ {} ] is marked as '{}'!".format(user[0], user[1]))
+			print("\t\t\tTry using the '--check_again' option to check if its accessible again.")
+			print("\t\t\tYou can also use '--update_status' to manually change its status.")
+
 		else:
-			print("\tERROR: User '{}' is marked as '{}'.".format(user[0][0], user[0][1]))
-			print("\tTry using the '--check_again' option to check if its accessible again.")
-			print("\tYou can also use '--update_status' to manually change its status.")
-		os._exit(1)
+			MsgPrinter.print_error("User [ {} ] is not in the database!".format(OPTIONS.start_at_user[0]))
+		
+		return
 
-	# Self-explanatory
-	if Options.skip is not None:
-		for user in Options.skip:
+	if OPTIONS.skip:
+		for user in OPTIONS.skip:
 			if user.lower() in user_list:  user_list.remove(user)
 
-	# 
 	for user in user_list[start_idx::]:
-
-		try:
-			if user != '':
-				update_db = True
-				print(f'\t--- Updating User: {user}\n')
-				fetch_tweets(user)
-
-		except finished_folder_update:
-			pass
-
-		except (requests.exceptions.RequestException,TimeoutError,tweepy.error.TweepError,requests.exceptions.ConnectionError) as e:
-			update_db = False
-			logging.exception("TypeError")
-			print(e)
-
-		except uncommon_twitter_exception:
-			update_db = False
-
-		except:
-			raise
-
-		if update_db and db_new_last_id != '0' and db_new_lookup != '':
-			UQ.update_user(user, tweet_id=db_new_last_id, tweet_date=db_new_lookup)
-			db_new_last_id = '0'
-			db_new_lookup = ''
-		print()
-	return
+		MsgPrinter.print_info("Updating User: {}".format(user))
+		user_timeline(user)
 
 def retry_non_active():
-	global error_code
 
-	if Options.check_again[0].lower().startswith('p'):     user_list = SQ.get_user_list('Protected')
-	elif Options.check_again[0].lower().startswith('s'):   user_list = SQ.get_user_list('Suspended')
-	elif Options.check_again[0].lower().startswith('d'):   user_list = SQ.get_user_list('Deleted')
-	elif Options.check_again[0].lower().startswith('n'):   user_list = SQ.get_user_list('Not Accessible')
-	else:   user_list = SQ.get_user_list('x')
+	non_active = SQ.get_user_list(OPTIONS.check_again[0])
+	active_users = []
+	private_users = []
+	accessible_users = dict()
 
-	update_db = True
-
-	for user in user_list:
+	for i in range(ceil(len(non_active)/100)):
 
 		try:
-			if user != '':
-				print(f'    --- Checking {user}\n')
-				logging.info(f"      Checking {user}")
-				fetch_tweets(str(user))
-
-		except finished_folder_update:
-			pass
-
-		except (requests.exceptions.RequestException,TimeoutError,tweepy.error.TweepError,requests.exceptions.ConnectionError) as e:
-			update_db = False
-			logging.exception("TypeError")
-
-		except uncommon_twitter_exception:
-			update_db = False
-
-		except:
-			logging.exception("I have no idea dude")
-			raise
-
-		try:
-			if error_code == 34:
-
-				error_code = 0
-				IQ.error(str(user), 'Not Accessible', '34')
-				print(f'\n       --- Checking for new name of {user}')
-				logging.info(f"          Checking for new name of {user}")
-
-				last_known_id = SQ.get_user(str(user))[0][2]
-				last_known_tweet = lookup_tweet(last_known_id)
-				UQ.rename_user(str(user), last_known_tweet.author.screen_name, ' '.join(sys.argv)[:97]+'...', Options.forced)
-				fetch_tweets(str(last_known_tweet.author.screen_name))
-
-				print(f'         ====> User [ {user} ] changed its name to [ {last_known_tweet.author.screen_name} ]')
-				user = last_known_tweet.author.screen_name
-				update_db = True
-
+			returned_users = API.lookup_users(screen_names=non_active[i*100:(i+1)*100])
 		except tweepy.error.TweepError:
-				error_code = 0
-				print('         ERROR: User might have a private account, or it may have been deleted')
-				logging.exception("              User is private or the account has been deleted")
+			continue
 
+		for user in returned_users:
+			if user.protected:
+				if user.following: 
+					active_users.append(user.screen_name.lower())
+				else: 
+					private_users.append(user.screen_name.lower())
+			else:
+				active_users.append(user.screen_name.lower())
 
-		global db_new_last_id
-		global db_new_lookup
-		username = user.lower()
+	logging.info("Function: RETRY_NON_ACTIVE(): Iterating over ACTIVE_USERS list")
+	for user in active_users:
+		MsgPrinter.print_info("Checking {}".format(user))
+		user_timeline(user)
+		UQ.update_user(user, status='Active')
+		non_active.remove(user)
 
-		if update_db:
-			UQ.update_user(user, status='Active')
-			print('     =====> Changed status to Active')
-			if db_new_last_id != '0' and db_new_lookup != '':
-				UQ.update_user(user, tweet_id=db_new_last_id, tweet_date=db_new_lookup)
-			db_new_last_id = '0'
-			db_new_lookup = ''
+	logging.info("Function: RETRY_NON_ACTIVE(): Iterating over PRIVATE_USERS list")
+	for user in private_users:
+		MsgPrinter.print_info("Checking {}".format(user))
+		UQ.update_user(user, status='Protected')
+		non_active.remove(user)
 
-		print()
-		update_db = True
-	return
+	logging.info("Function: RETRY_NON_ACTIVE(): Iterating over NON_ACTIVE list")
+	users_with_no_tweets = []
+	for user in non_active:
 
-### OK
-def follow_users():
-	fail_count = 0
-	for user in Options.follow:
-		try:
-			api.create_friendship(user)
-		except tweepy.error.TweepError as err:
-			fail_count += 1
-			print ("Error with User: {} ---> {}".format(user, err.response.json()['errors'][0]['message']))
-			logging.info("  Error with User: {} ---> {}".format(user, err.response.json()['errors'][0]['message']))
-		#time.sleep(random.choice(range(Options.time[0]-60,Options.time[0]+60))) 
+		random_tweet = SQ.get_random_tweet(user)
 
-### OK
-def search_tweets():
-	save_folder = 'Searched Tweets' + '\\' + ''.join([ch if ch not in '\\/:"*?<>|' else '_' for ch in Options.search[0].strip()])
-	os.makedirs(save_folder, exist_ok=True) 
-	try:
-		for twt in tweepy.Cursor(api.search, q=' '.join(Options.search), count=100, include_entities=True, tweet_mode='extended').items(): 
-			print(twt.id)
-			process_tweet(twt, save_folder, [0])  
-	except Exception as e:
-		print(e)
-
-
-def lookup_tweet(id_str=None):
-	if id_str is not None:  
-		return api.get_status(id_str)
-	else:
-		for _id_ in Options.lookup_id:
+		if random_tweet:
+			MsgPrinter.print_info("Checking {}".format(user))
+			tweet_id = random_tweet[1]
+			
 			try:
-				print(api.get_status(_id_))
-			except tweepy.error.TweepError as err:
-				print ("\tError with ID: {} ---> {}".format(_id_, err.response.json()['errors'][0]['message']))
-			time.sleep(Options.time[0])
+				status = API.get_status(tweet_id)
+				new_name = status.author.screen_name
+				accessible_users[user] = new_name
+				MsgPrinter.print_warning("Found new name for [ {} ]: {}\n".format(user, new_name))
 
+			except tweepy.error.TweepError as err:
+
+				if err.response.status_code == 429:
+					error_message = 'The request limit for this resource has been reached.'
+					IQ.error(username, 'RateLimit', 429)
+					MsgPrinter.print_warning(error_message)
+
+				else:
+					error_code, error_message = err.response.json()['errors'][0].values()
+
+					if error_code == 63:	# User Suspended
+						MsgPrinter.print_warning(error_message)
+						UQ.update_user(user, status='Suspended')
+						IQ.error(user, 'Suspended', error_code)
+
+					elif error_code in (144, 34):	# Tweet Deleted
+
+						if OPTIONS.deep_check:
+							user_tweets = SQ.get_ids_from_user(user)
+							is_accesible = False
+
+							for i in range(ceil(len(user_tweets)/100)):
+								returned_status = API.statuses_lookup(user_tweets[i*100:(i+1)*100])
+
+								if len(returned_status) != 0:
+									accessible_users[user] = returned_status[0].author.screen_name
+									is_accesible = True
+									break
+								else:
+									time.sleep(20)
+
+							if not is_accesible:
+								IQ.error(user, 'Deleted', error_code)
+								MsgPrinter.print_warning("User has been deleted and / or deleted their old tweets")
+
+						else:
+							MsgPrinter.print_warning("The random tweet check didn't return anything. Try using the --deep_check option to check all past tweets from this user.")
+							logging.warning(error_message)
+							UQ.update_user(user, status='Not Accessible')
+
+					elif error_code == 179:	# User Private
+						MsgPrinter.print_warning("You are not authorized to see this user's tweets.")
+						IQ.error(user, 'Protected', error_code)
+						UQ.update_user(user, status='Protected')
+
+					else:
+						print(err)
+						MsgPrinter.print_error(error_message)
+
+				print()
+		else:
+			users_with_no_tweets.append(user)
+
+	if len(users_with_no_tweets) != 0:
+		print("Users that we could not check because there are no tweets saved under their name:", *users_with_no_tweets)
+
+	logging.info("Users that will be renamed:")
+	for k,v in accessible_users.items(): logging.info("{} > {}".format(k,v))
+
+	for old_name, new_name in accessible_users.items():
+		try:
+			UQ.rename_user(old_name, new_name, COMMAND_ARGUMENTS)
+			MsgPrinter.print_info("Updating User: {}".format(user))
+			user_timeline(new_name)
+			UQ.update_user(new_name, status='Active')
+			
+		except MsgPrinter.UserExists as err:
+			print(err)
+			print("Try using the --fuse_users option to merge both users.")
+
+		except MsgPrinter.FolderExists as err:
+			print(err)
+			print("Try moving / deleting the following folder before any rename takes place:", os.path.join(os.getcwd(), new_name))
+
+def follow_users():
+	for user in OPTIONS.follow:
+		try:
+			API.create_friendship(user)
+			time.sleep(30)
+		except tweepy.error.TweepError as err:
+			MsgPrinter.print_error("{} ---> {}".format(user, err.response.json()['errors'][0]['message']))
+
+def search_tweets():
+	save_folder = os.path.join('_____SEARCH_____', ''.join([ch if ch not in '\\/:"*?<>|' else '_' for ch in OPTIONS.search[0].strip()]))
+	os.makedirs(save_folder, exist_ok=True) 
+
+	for tweet in tweepy.Cursor(API.search, q=' '.join(OPTIONS.search), count=100, include_entities=True, tweet_mode='extended').items(): 
+		process_tweet(tweet, save_folder)
 
 def single_tweet():
-	os.makedirs('_tmp', exist_ok=True)
-	fail_count = 0
-	for tweet in Options.single:
-		try:
-			twt = api.get_status(tweet, tweet_mode='extended')
-			#print(json.dumps(twt._json, sort_keys=True, indent=4))
-			process_tweet(twt, '_tmp',[0])
+	os.makedirs('_____SINGLE_____', exist_ok=True)
 
+	for tweet in OPTIONS.single:
+		try:
+			process_tweet(API.get_status(tweet, tweet_mode='extended'), '_____SINGLE_____')
 		except tweepy.error.TweepError as err:
-			fail_count += 1
-			print ("Error with ID: {} ---> {}".format(tweet, err.response.json()['errors'][0]['message']))
-			logging.info("  Error with ID: {} ---> {}".format(tweet, err.response.json()['errors'][0]['message']))
+			MsgPrinter.print_error("{} ---> {}".format(tweet, err.response.json()['errors'][0]['message']))
 
-	logging.info('\t\tDownloaded media from single tweet(s) -- exiting script')
+def my_timeline():
 
-def my_timeline(last_id=None):
-	max_id = last_id
-	if Options.start_at is not None and last_id is None and Options.start_at[0].isdigit(): max_id = Options.start_at[0]
-	return f"{authenticated_user.screen_name}'s Timeline", api.home_timeline(count=200,exclude_replies=Options.no_replies,max_id=max_id)
+	save_folder = "{}'s Timeline".format(AUTHENTICATED_USER.screen_name)
+	os.makedirs(save_folder, exist_ok=True)
 
-def user_timeline(username='', last_id=None):
-	global error_code
-	max_id = last_id
-
-	try:
-		tweets = api.user_timeline(screen_name=username,
-			count=200,
-			exclude_replies=Options.no_replies,
-			include_rts=Options.no_retweets,
-			max_id=max_id)
-		## print(username, '--->' ,api.get_user(username)._json['id'])
-
-	except requests.exceptions.RequestException as e:
-		print ('    ###    Connection Error    ###')
-		print ('    There is no internet connection')
-		logging.info(" ####### Connection Error ####### ")
-		logging.exception("Connection_Error")
-		return
-	except tweepy.TweepError as e:
-		print ('    ###    Error    ###')
-		logging.info(" ####### Twitter Error ####### ")
-		try:
-			print ('    Error Code: ' + str(e.args[0][0]['code']))
-			print ('    Error Message: ' + e.args[0][0]['message'])
-			logging.info(f" ### Twitter Error Code -- {str(e.args[0][0]['code'])}")
-			logging.info(f" ### User: {username}")
-			logging.info(f" ### Twitter Error Message -- {e.args[0][0]['message']}")
-			if Options.check_again is not None: 
-				error_code = int(e.args[0][0]['code'])
-				raise uncommon_twitter_exception
-		except TypeError:
-			print (f'    Error Message: {e.args[0]}')
-			logging.info(f" ### User: {username}")
-			logging.info(f" ### Error Message -- {e.args[0]}")
-		print ('    For more info about this error, check https://developer.twitter.com/en/docs/basics/response-codes')
-
-		if SQ.get_user(username) is not None: 
-			UQ.update_user(username, status='Not Accessible')
-			try:
-				IQ.error(username, 'Not Accessible', str(e.args[0][0]['code']))
-			except:
-				IQ.error(username, 'Not Accessible', 'Unknown')
-		if Options.update_all or Options.check_again is not None:   raise uncommon_twitter_exception
-
-		os._exit(1)
-	
-	return username,tweets
-
-def fetch_tweets(username=''):
-	global api, dups_count, fetched_tweets
-	tweets = []
-	
-	if Options.my_timeline: save_folder,tweets = my_timeline()
-	else: 
-		if Options.start_at is not None and Options.start_at[0].isdigit():  save_folder,tweets = user_timeline(username,Options.start_at[0])
-		else: save_folder,tweets = user_timeline(username)
-
-	try:
-		oldest = tweets[-1].id - 1     
-		os.makedirs(save_folder, exist_ok=True)
-	except IndexError:
-		logging.info(f"     ::::::: ERROR (IndexError) while Updating {username}:")
-		#logging.info(f"         ERROR (IndexError) while Updating {username}")
-		return
-			
-	logging.info(f"      Updating {username}")
-	local_tweet_count = 0
-
-	# Really awful way to do it but just bear with me
-	local_dups_count = []
-	local_dups_count.append(0)
+	tweets = API.home_timeline(count=200, 
+		exclude_replies=OPTIONS.no_replies, 
+		include_rts=OPTIONS.no_retweets, 
+		tweet_mode='extended',
+		max_id=OPTIONS.start_at_id[0] if OPTIONS.start_at_id else None)
 
 	while len(tweets) > 0:
-		for twt in tweets:
-			fetched_tweets += 1
-			local_tweet_count += 1
-			process_tweet(twt, save_folder,local_dups_count)
-			if Options.max_fetch is not None and local_tweet_count >= int(Options.max_fetch[0]):
-				logging.info(f'              Reached {local_tweet_count} fetched tweets (max. set to {Options.max_fetch[0]})')
-				print(f'              Reached {local_tweet_count} fetched tweets (max. set to {Options.max_fetch[0]})')
-				if Options.update_all:   raise finished_folder_update
-				else:   return
 
-			if (Options.no_dups and local_dups_count[0] > 0) or (Options.max_dups is not None and local_dups_count[0] >= int(Options.max_dups[0])):
-				logging.info(f'              Found {local_dups_count[0]} duplicate files')
-				print(f'              Found {local_dups_count[0]} duplicate files')
-				if Options.update_all: raise finished_folder_update
-				else: return
+		for tweet in tweets: process_tweet(tweet, save_folder)
 
-		if Options.my_timeline: _,tweets = my_timeline(oldest)
-		else: _,tweets = user_timeline(username,oldest)
-		if len(tweets) > 0: oldest = tweets[-1].id - 1
+		tweets = API.home_timeline(count=200, 
+			exclude_replies=OPTIONS.no_replies, 
+			include_rts=OPTIONS.no_retweets, 
+			tweet_mode='extended',
+			max_id=(tweets[-1].id - 1))
 
-def process_tweet(twt, save_folder,local_dups_count):
-	global db_new_user,db_new_last_id,dups_count
+def user_timeline(username):
+
+	save_folder = username
+	os.makedirs(username, exist_ok=True)
 
 	try:
-		file_path = ''
-		date = twt.created_at.strftime('%Y-%m-%d %X')
-		if hasattr(twt, "retweeted_status"):
-			twt = twt.retweeted_status
-			date = twt.created_at.strftime('%Y-%m-%d %X')
-		
-		if hasattr(twt, "extended_entities"):
-			if Options.check_table and SQ.already_downloaded(twt.id):
-				if Options.dup_info: print(f'          # Already in table: {twt.author.screen_name} {twt.id_str}')
-				logging.info(f'          Already downloaded: {twt.author.screen_name} {twt.id_str}')
-				local_dups_count[0] += 1
-				dups_count += 1
-				return
+		tweets = API.user_timeline(screen_name=username,
+			count=200,
+			exclude_replies=OPTIONS.no_replies,
+			include_rts=OPTIONS.no_retweets,
+			tweet_mode='extended',
+			max_id=OPTIONS.start_at_id[0] if OPTIONS.start_at_id else None)
 
-			if twt.extended_entities['media']:
-				db_new_user = twt.author.screen_name
-				if int(twt.id_str) > int(db_new_last_id):
-					db_new_last_id = twt.id_str
+		while len(tweets) > 0:
+			
+			for tweet in tweets: process_tweet(tweet, save_folder)
 
-				media_count = 1
-				for media in twt.extended_entities['media']:
-					if 'video_info' in media and not Options.no_video:
-						bitrate = 0
-						url = ''
-						videos = media["video_info"]["variants"]
-						for i in videos:
-							if i["content_type"] == "video/mp4" and i["bitrate"] >= bitrate:
-								bitrate = i["bitrate"]
-								url = i["url"]
-						file_extension = url.rsplit('.', 1)[1]
-					elif 'video_info' not in media and not Options.no_image:
-						url = media['media_url']
-						file_extension = url.rsplit('.', 1)[1]
-						url = url + ':orig'
-					else:
+			tweets = API.user_timeline(screen_name=username,
+				count=200,
+				exclude_replies=OPTIONS.no_replies,
+				include_rts=OPTIONS.no_retweets,
+				tweet_mode='extended',
+				max_id=(tweets[-1].id - 1))
+
+		if SQ.get_user(username) is None:
+			IQ.user(username)
+
+		#UQ.update_user(username, status='Active')
+
+	except tweepy.error.TweepError as err:
+
+		if err.response.status_code == 429:
+			error_message = 'The request limit for this resource has been reached.'
+			IQ.error(username, 'RateLimit', 429)
+
+		else:
+			error_code, error_message = err.response.json()['errors'][0].values()
+			
+			if error_code == 63:	# User Suspended
+				UQ.update_user(username, status='Suspended')
+				IQ.error(username, 'Suspended', error_code)
+
+			elif error_code == 144:	# Tweet Deleted
+				UQ.update_user(username, status='Deleted')
+				IQ.error(username, 'Deleted', error_code)
+
+			elif error_code == 179: # User Private
+				UQ.update_user(username, status='Protected')
+				IQ.error(username, 'Protected', error_code)
+
+		MsgPrinter.print_error(error_message)
+
+	except (MsgPrinter.MaxDupesFound, MsgPrinter.MaxTweetsFetched) as err:
+		global DUPES_COUNT, FETCHED_TWEETS_COUNT
+		DUPES_COUNT = 0 
+		FETCHED_TWEETS_COUNT = 0 
+		MsgPrinter.print_warning(err)
+
+	except Exception as err:
+		MsgPrinter.print_error(err)
+
+def process_tweet(tweet, save_folder):
+	global DUPES_COUNT, FETCHED_TWEETS_COUNT
+	FETCHED_TWEETS_COUNT += 1
+
+	if OPTIONS.max_dups:
+		if DUPES_COUNT >= OPTIONS.max_dups[0]:
+			raise MsgPrinter.MaxDupesFound("Reached {} duplicated tweets.".format(DUPES_COUNT))
+
+	if OPTIONS.max_fetch:
+		if FETCHED_TWEETS_COUNT >= OPTIONS.max_fetch[0]:
+			raise MsgPrinter.MaxTweetsFetched("Fetched {} tweets.".format(DUPES_COUNT))
+
+	if hasattr(tweet, "retweeted_status"):
+		tweet = tweet.retweeted_status
+
+	date = tweet.created_at.strftime('%Y-%m-%d %X')
+	
+	try:
+		if SQ.already_downloaded(tweet.id):
+			MsgPrinter.print_warning(">>>>> Already downloaded: {} {}".format(tweet.author.screen_name, tweet.id_str))
+			DUPES_COUNT += 1
+			return
+
+		if tweet.extended_entities['media']:
+
+			for media_count, media in enumerate(tweet.extended_entities['media']):
+
+				if OPTIONS.no_video and OPTIONS.no_image:
+					return
+
+				if 'video_info' in media and not OPTIONS.no_video:
+					bitrate = 0
+
+					for item in media["video_info"]["variants"]:
+						if item["content_type"] == "video/mp4" and item["bitrate"] >= bitrate:
+							bitrate = item["bitrate"]
+							url = item["url"]
+					
+					file_extension = url.split('.')[-1]
+
+				elif 'video_info' not in media and not OPTIONS.no_image:
+					url = media['media_url']
+					file_extension = url.split('.')[-1]
+					url += ':orig'
+
+				else:
+					break
+
+				if '?' in file_extension:	# Special case
+					file_extension = file_extension.split('?')[0]
+
+				try:
+					content = requests.get(url, stream=True, timeout=1) 
+
+				except Exception as err:
+					MsgPrinter.print_error(err)
+					logging.info("## Tweet Author: {}".format(tweet.author.screen_name))
+					logging.info("## Tweet ID: {}".format(tweet.id_str))
+					logging.info("## File Format: {}".format(file_extension))
+					logging.info("## Media URL: {}".format(url))
+					return
+
+				file_name = "{} {} [{}].{}".format(tweet.author.screen_name, tweet.id_str, media_count+1, file_extension)
+				file_path = os.path.join(save_folder, file_name)
+				save_file(file_path, content, date)
+
+				'''
+				if OPTIONS.save_to_user_folder:
+
+					if SQ.get_user(tweet.author.screen_name) is not None:   
+						file_path = os.path.join(os.getcwd(), tweet.author.screen_name, file_name)
+
+					elif OPTIONS.only_db:   
 						break
 
-
-					try:
-						content = requests.get(url, stream=True, timeout=1) 
-					except:
-						logging.info(" ### ERROR - 'Connection Aborted' due to timeout")
-						logging.info(f" ### Tweet Author: {twt.author.screen_name}")
-						logging.info(f" ### Tweet ID: {twt.id_str}")
-						logging.info(f" ### File Format: {file_extension}")
-						logging.info(f" ### Media URL: {url}")
-						return
-
-
-					if '?' in file_extension:	# Special case
-						file_extension = file_extension.split('?')[0]
-
-					file_name = f"{twt.author.screen_name} {twt.id_str} [{media_count}].{file_extension}"
-
-					if Options.save_to_user_folder:
-						if SQ.get_user(twt.author.screen_name) is not None:   file_path = os.getcwd() + '\\' + twt.author.screen_name + '\\' + file_name
-						elif Options.only_db:   break
-						else:   file_path = save_folder + '\\' + file_name
-					else:
+					else:   
 						file_path = save_folder + '\\' + file_name
+				else:
+					file_path = save_folder + '\\' + file_name
 
-					if Options.into is not None:
-						if os.path.isdir(Options.into[0]):
-							if Options.split:
-								db_path = Options.into[0] + '\\' + 'IN_DB'
-								not_db_path = Options.into[0] + '\\' + 'NOT_IN_DB'
-								os.makedirs(db_path, exist_ok=True)
-								os.makedirs(not_db_path, exist_ok=True)
-								if SQ.get_user(twt.author.screen_name) is not None:   file_path = db_path + '\\'+ file_name
-								else:   file_path = not_db_path + '\\' + file_name
-							else:
-								file_path = Options.into[0] + '\\' + file_name
+				if OPTIONS.into is not None:
+					if os.path.isdir(OPTIONS.into[0]):
+						if OPTIONS.split:
+							db_path = OPTIONS.into[0] + '\\' + 'IN_DB'
+							not_db_path = OPTIONS.into[0] + '\\' + 'NOT_IN_DB'
+							os.makedirs(db_path, exist_ok=True)
+							os.makedirs(not_db_path, exist_ok=True)
+							if SQ.get_user(tweet.author.screen_name) is not None:   file_path = db_path + '\\'+ file_name
+							else:   file_path = not_db_path + '\\' + file_name
+						else:
+							file_path = OPTIONS.into[0] + '\\' + file_name
 
-					save_file(file_path, content, date, Options, local_dups_count)
-					media_count += 1  
+				'''
 
-				if SQ.already_downloaded(twt.id):
-					if len(' '.join(sys.argv)) > 100:   
-						IQ.download(twt, ' '.join(sys.argv)[:97]+'...')
-					else: 
-						IQ.download(twt, ' '.join(sys.argv))
-					logging.info(f'          ---> Added to the table: {twt.id_str}')
-		else:
-			print(twt._json['id'], "has no extended_entities => Can't be downloaded")
-	except AttributeError:
-		print(f'ERROR ---- Twitter User: {twt.author.screen_name} ----- Tweet ID: {twt.id_str}')
-	return
+			IQ.download(tweet, COMMAND_ARGUMENTS[:97] + '...' if len(COMMAND_ARGUMENTS) > 100 else COMMAND_ARGUMENTS)
 
-def save_file(file_path, data, date, Options, local_dups_count):
+	#except sqlite3.IntegrityError as err:
 
-	global dups_count,file_count
-	filename = file_path.rsplit('\\', 1)[1]
-
-	if not os.path.exists(file_path) or os.path.getsize(file_path) != len(data.content):
-
-		prefix = 'Updating:' if os.path.exists(file_path) else 'Saving:'
-
-		print(f'        {prefix} {filename}')
-		logging.info(f'          {prefix} {filename}')
-		
-		try:
-			with open(file_path, 'wb') as f: f.write(data.content)
-			stinfo = os.stat(file_path)
-			os.utime(file_path,(stinfo.st_mtime, time.mktime(time.strptime(date, '%Y-%m-%d %X'))))
-			file_count += 1
-
-		except requests.exceptions.ConnectionError as e:
-			logging.exception("UNUSUAL:FAILED AT SAVE_FILE()")
-			logging.info(f'          Failed to retrieve content from {filename}')
-			with open(file_path + " [Corrupted]", 'wb') as f: f.write('1'.encode())
-
-		if Options.store_in_tmp:
-			db_path = 'D:' + '\\' + 'TEMP' + '\\' + 'IN_DB'
-			not_db_path = 'D:' + '\\' + 'TEMP' + '\\' + 'NOT_IN_DB'
-			if SQ.get_user(filename.split(' ')[0]) is not None:   file_path = db_path + '\\'+ filename
-			else:   file_path = not_db_path + '\\' + filename
-
-			try:
-				with open(file_path, 'wb') as f: f.write(data.content)
-			except requests.exceptions.ConnectionError as e:
-				with open(file_path + " [Corrupted]", 'wb') as f: f.write(''.encode())
+	except AttributeError as err:
+		pass
+		#logging.error("{} has no extended_entities => Can't be downloaded".format(tweet.id_str))
 	
-	else:
-		logging.info(f'          Already saved: {filename}')
-		if Options.dup_info: print(f'        Already saved: {filename}')
-		dups_count += 1
-		local_dups_count[0] += 1
-	stinfo = os.stat(file_path)
-	os.utime(file_path,(stinfo.st_mtime, time.mktime(time.strptime(date, '%Y-%m-%d %X'))))
+def save_file(file_path, data, date):
 
-	global db_new_lookup
-	if db_new_lookup == '': db_new_lookup = date
+	global FILE_COUNT
+	_, filename = os.path.split(file_path)
 
-# on mtl, utl and search, change status of user to active if its accessible
-# DONE      -   if user in db, do not check ids lower than the 'last id' stored on the db when -nd is true
+	if os.path.exists(file_path) and os.path.getsize(file_path) == len(data.content):
+		MsgPrinter.print_warning("Already saved: {}".format(filename))
+		return
 
-def main():
-	global api, auth, authenticated_user
-	credentials = {}
-	print()
-	script_start = time.strftime("%X", time.localtime())
-
-	if not Options.nolog:
-		logging.basicConfig(handlers=[logging.FileHandler('activity_log ' + str(time.strftime("%y-%m-%d %H.%M.%S", time.localtime())) + '.txt', 'w', 'utf-8')],level=logging.INFO,
-		 format="%(asctime)s %(levelname)-4s %(message)s",
-		 datefmt="%Y-%m-%d %H:%M:%S")
-		logging.info("  Starting UTG")
-		logging.info(f"  Started at: {script_start}\n")
+	MsgPrinter.print_info("Saving: {}".format(filename))
 	
 	try:
-		if Options.keys is not None:
-			credentials = json.load(open(Options.keys[0]))
+		with open(file_path, 'wb') as f:
+			f.write(data.content)
+			FILE_COUNT += 1
+
+		os.utime(file_path, (os.stat(file_path).st_mtime, time.mktime(time.strptime(date, '%Y-%m-%d %X'))))
+
+	except requests.exceptions.ConnectionError as err:
+		MsgPrinter.print_error(err)
+
+	'''
+	if OPTIONS.store_in_tmp:
+		db_path = 'D:' + '\\' + 'TEMP' + '\\' + 'IN_DB'
+		not_db_path = 'D:' + '\\' + 'TEMP' + '\\' + 'NOT_IN_DB'
+
+		if SQ.get_user(filename.split()[0]) is not None:   
+			file_path = db_path + '\\'+ filename
+		else:   
+			file_path = not_db_path + '\\' + filename
+
+		try:
+			with open(file_path, 'wb') as f: 
+				f.write(data.content)
+		except requests.exceptions.ConnectionError as err:
+			MsgPrinter.print_error(err)
+	'''
+	
+def main():
+	global API, AUTHENTICATED_USER
+	start_time = time.time()        #Change to time.localtime()
+	script_start = time.strftime("%X", time.localtime())
+	print()
+	
+	try:
+		if OPTIONS.keys is not None:
+			
+			credentials = json.load(open(OPTIONS.keys[0]))
 			auth = tweepy.OAuthHandler(credentials['consumer_key'], credentials['consumer_secret'])
 			auth.set_access_token(credentials['access_token'], credentials['access_token_secret'])
-			api = tweepy.API(auth, wait_on_rate_limit=True, wait_on_rate_limit_notify=True)
-			authenticated_user = api.verify_credentials()
+			API = tweepy.API(auth, wait_on_rate_limit=True, wait_on_rate_limit_notify=True)
+			AUTHENTICATED_USER = API.verify_credentials()
+
+			#if OPTIONS.lookup_id is not None:		lookup_tweet()
+			if OPTIONS.search is not None:			search_tweets()
+			if OPTIONS.retweet is not None:			id_queue('retweet')
+			if OPTIONS.unretweet is not None:		id_queue('unretweet')
+			if OPTIONS.like is not None:			id_queue('like')
+			if OPTIONS.dislike is not None:			id_queue('dislike')
+			if OPTIONS.single is not None:			single_tweet()
+			if OPTIONS.follow is not None:			follow_users()
+			if OPTIONS.update_all:					update_all()
+			if OPTIONS.check_again is not None:		retry_non_active()
+			if OPTIONS.my_timeline:					my_timeline()
+			if OPTIONS.user_timeline:				user_timeline(OPTIONS.user_timeline[0])
+
+			# Windows only
+			if(OPTIONS.sleep):   
+				os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
 		
-		if Options.lookup_id is not None:		lookup_tweet()
-		if Options.search is not None:			search_tweets()
-		if Options.retweet is not None:			id_queue('retweet')
-		if Options.unretweet is not None:		id_queue('unretweet')
-		if Options.like is not None:			id_queue('like')
-		if Options.dislike is not None:			id_queue('dislike')
-		if Options.single is not None:			single_tweet()
-		if Options.follow is not None:			follow_users()
-		if Options.update_all:					update_all()
-		if Options.check_again is not None:		retry_non_active()
-		if Options.my_timeline:					fetch_tweets()
+	except (MsgPrinter.MaxDupesFound, MsgPrinter.MaxTweetsFetched) as err:
+		pass
 
-		if Options.user_timeline is not None:
-			fetch_tweets(Options.user_timeline[0])
-			if SQ.get_user(Options.user_timeline[0]) is not None and db_new_last_id != '0' and db_new_lookup != '':
-				user = SQ.get_user(Options.user_timeline[0])
-				UQ.update_user(Options.user_timeline[0], tweet_id=db_new_last_id, tweet_date=db_new_lookup)
-				if user[0][1] != 'Active': UQ.update_user(Options.user_timeline[0], status='Active')
-			elif SQ.get_user(Options.user_timeline[0]) is None:
-				IQ.user(Options.user_timeline[0],db_new_last_id,db_new_lookup)
-			print('\nDatabase updated!')
+	except KeyboardInterrupt:	
+		raise
 
-	except KeyboardInterrupt:	logging.info('\t\tSIGINT detected -- Stopping script')
-	except TimeoutError:		print('\nClosing due to TimeoutError\n')
-	except:						logging.exception("Unknown Error at the end of MAIN")
+	except tweepy.error.TweepError as err:
+		MsgPrinter.print_error(err.response.json()['errors'][0]['message'])
 
-	if Options.print_downloads_:		PQ.downloaded_tweets(include_command=True)
-	if Options.print_downloads:			PQ.downloaded_tweets(include_command=False) 
-	if Options.print_renamed:			PQ.renamed_users(include_command=True)
-	if Options.print_deleted:			PQ.deleted_users()
-	if Options.print_errors:			PQ.errors()
-	if Options.print_users is not None:	PQ.users(Options.print_users[0]) 
-	if Options.print_likes is not None:	PQ.likes(Options.print_likes[0])
+	except TimeoutError as err:		
+		MsgPrinter.print_error(err)
 
-	if Options.add_user is not None:			IQ.user(user=Options.add_user[0])
-	if Options.remove_user is not None:			UQ.delete_user(Options.remove_user[0])
-	if Options.rename_user is not None:			UQ.rename_user(Options.rename_user[0], Options.rename_user[1], ' '.join(sys.argv)[:97]+'...', Options.forced)
-	if Options.fuse_users is not None:			UQ.fuse_users(Options.fuse_users[0], Options.fuse_users[1])
-	if Options.update_status is not None:		UQ.update_user(Options.update_status[0], status=Options.update_status[1])
-	#if Options.rescan_user is not None:		db_operations.rescan_user(Options.rescan_user[0])
-	#if Options.rescan_all:						db_operations.rescan_all()    
+	except Exception as err:
+		logging.exception(err)		
 
-	print('\nClosing...\n')
-	
-	print(f'\tFetched {fetched_tweets} tweets')
-	print(f'\tSaved {file_count} images / gifs / videos')
-	print(f'\tFound {dups_count} duplicate files')
-	print(f'\tStarted at:  {script_start}')
-	print(f'\tEnded at:    {time.strftime("%X", time.localtime())}')
-	print(f'\tRun time:    {time.strftime("%X", time.gmtime(time.time() - start_time))}')
-	#winsound.PlaySound('doves.wav', winsound.SND_FILENAME)
+	if OPTIONS.print_downloads_text:		PQ.downloaded_tweets(include_command=True)
+	if OPTIONS.print_downloads:				PQ.downloaded_tweets(include_command=False) 
+	if OPTIONS.print_renamed:				PQ.renamed_users(include_command=True)
+	if OPTIONS.print_deleted:				PQ.deleted_users()
+	if OPTIONS.print_errors:				PQ.errors()
+	if OPTIONS.print_users is not None:		PQ.users(OPTIONS.print_users[0]) 
+	if OPTIONS.print_likes is not None:		PQ.likes(OPTIONS.print_likes[0])
+
+	if OPTIONS.add_user is not None:		IQ.user(user=OPTIONS.add_user[0])
+	if OPTIONS.remove_user is not None:		UQ.delete_user(OPTIONS.remove_user[0])
+	if OPTIONS.rename_user is not None:		UQ.rename_user(OPTIONS.rename_user[0], OPTIONS.rename_user[1], COMMAND_ARGUMENTS)
+	if OPTIONS.fuse_users is not None:		UQ.fuse_users(OPTIONS.fuse_users[0], OPTIONS.fuse_users[1])
+	if OPTIONS.update_status is not None:	UQ.update_user(OPTIONS.update_status[0], status=OPTIONS.update_status[1])
+	#if OPTIONS.rescan_user is not None:	db_operations.rescan_user(OPTIONS.rescan_user[0])
+	#if OPTIONS.rescan_all:					db_operations.rescan_all()    
+
+	print()
 
 	end_time = time.strftime("%X", time.localtime())
 	run_time = time.strftime("%X", time.gmtime(time.time() - start_time))
 
-	logging.info(f'\tFetched {fetched_tweets} tweets')
-	logging.info(f'\tSaved {file_count} files')
-	logging.info(f'\tFound {dups_count} duplicate files')
-	logging.info(f'\tStarted at: {script_start}')
-	logging.info(f'\tEnded at: {end_time}')
-	logging.info(f'\tRun time: {run_time}')
-	if(Options.sleep):   os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
+	if FETCHED_TWEETS_COUNT != 0:
+		MsgPrinter.print_info("Fetched {} tweets".format(FETCHED_TWEETS_COUNT))
+		MsgPrinter.print_info("Saved {} files".format(FILE_COUNT))
+		MsgPrinter.print_info("Found {} duplicate tweets".format(DUPES_COUNT))
+
+	MsgPrinter.print_info("Started at: {}".format(script_start))
+	MsgPrinter.print_info("Ended at: {}".format(end_time))
+	MsgPrinter.print_info("Run time: {}".format(run_time))	
+	#winsound.PlaySound('doves.wav', winsound.SND_FILENAME)	
 
 if __name__== "__main__":
 	
 	with open('TIG_commands_history.txt', 'a', encoding='utf-8') as history:
-		history.write(time.strftime("%d/%m/%y %X", time.localtime()) + ' ---- ' + ' '.join(sys.argv) + '\n')
+		history.write(time.strftime("%d/%m/%y %X", time.localtime()) + ' ---- ' + COMMAND_ARGUMENTS + '\n')
+
+	os.makedirs("______LOGS______", exist_ok=True)
+	logpath = '[LOG] ' + time.strftime("%y-%m-%d %H.%M.%S", time.localtime()) + '.txt'
+	logpath = os.path.join("______LOGS______", logpath)
+
+	logging.basicConfig(handlers=[logging.FileHandler(logpath, 'w', 'utf-8')],
+		level=logging.INFO,
+		format="%(asctime)s %(levelname)-4s %(message)s",
+		datefmt="%Y-%m-%d %H:%M:%S")
+	logging.info("Starting TIG\n")
 
 	parser = argparse.ArgumentParser()
 
-	# Basic Options
+	# Basic OPTIONS
 	parser.add_argument('-k', '--keys', help='Specifies the JSON file containing your API keys',type=str,metavar=('JSON_FILE'), nargs=1)
 	parser.add_argument('-mtl', '--my_timeline', help='Downloads media from YOUR Timeline (the account associated with the Access Token / Keys you provided) (800 tweets max.)', action='store_true')
 	parser.add_argument('-utl', '--user_timeline', help='Downloads media from the specified user (Up to 3200 tweets)', nargs=1, metavar=('USER_NAME'))
@@ -618,7 +586,7 @@ if __name__== "__main__":
 	parser.add_argument('--search', help='Downloads media from tweets that include the specified #hashtag / word.', nargs='+', metavar=('QUERY'))
 	parser.add_argument('--update_all', help="It will try to update all ACTIVE users from the database", action='store_true')
 
-	# Advanced Options
+	# Advanced OPTIONS
 	parser.add_argument('-nrt', '--no_retweets', help='Prevents retweets from being downloaded', action='store_false')
 	parser.add_argument('-nrp', '--no_replies', help='Prevents replies from being downloaded', action='store_true')
 	parser.add_argument('-nimg', '--no_image', help='Prevents images from being downloaded (Only gif/videos will be downloaded)', action='store_true')
@@ -627,24 +595,25 @@ if __name__== "__main__":
 	parser.add_argument('-mxf', '--max_fetch', help='Stops the download after it fetches N duplicate tweets.',type=int, nargs=1,metavar=('N'))
 	parser.add_argument('-nd', '--no_dups', help='Exits the script after finding the first duplicate image', action='store_true')
 	parser.add_argument('--skip', help='Used with --update-all. It will try to update all users from the database except for those specified in this list', nargs='+', metavar=('USER_NAME'))
-	parser.add_argument('--start_at', help='When used with -utl, the script will only download tweets with an ID number lower than the one provided. When used with --update-all, ----------- ---------- ---------', nargs=1, metavar=('TWEET_ID / USER_NAME'))
+	parser.add_argument('--start_at_user', help='When used with -utl, the script will only download tweets with an ID number lower than the one provided. When used with --update-all, ----------- ---------- ---------', nargs=1, metavar=('TWEET_ID / USER_NAME'))
+	parser.add_argument('--start_at_id', help='When used with -utl, the script will only download tweets with an ID number lower than the one provided. When used with --update-all, ----------- ---------- ---------', nargs=1, metavar=('TWEET_ID / USER_NAME'))
 	parser.add_argument('--save_to_user_folder', help="If a tweet's author is in the database, it will download the tweet into their user folder, instead of the default folder.", action='store_true')
 	parser.add_argument('--only_db', help='Only saves media from tweets whose author is in the database', action='store_true')
 	parser.add_argument('--sleep', help='Puts the computer to sleep once the script finishes.', action='store_true')
-	parser.add_argument('--dup_info', help="It will print a message (both in console and logging file) whenever it tries to download a tweet that's already stored in it's respective folder", action='store_true')
+	#parser.add_argument('--dup_info', help="It will print a message (both in console and logging file) whenever it tries to download a tweet that's already stored in it's respective folder", action='store_true')
 	parser.add_argument('--delete_tweets', help='Deletes the specified tweet(s), as long as they belong to the user authenticated', nargs='+', metavar=('TWEET_ID'))
 	parser.add_argument('--lookup_id', help='Checks a single tweet and prints its information', nargs="+", metavar=('TWEET_ID'))
 	parser.add_argument('--check_last_id', help='If the user is in the DB, the script will stop downloading tweets whenever it find a tweet with an ID lower than the one stored in the DB', action='store_true')
-	parser.add_argument('--nolog', help="If used, the script will not create a log file", action='store_true')
+	#parser.add_argument('--log', help="If used, the script will create a log file.", action='store_true')
 	parser.add_argument('--into', help="When providing a valid path, the script will proceed to download all media into the specified folder path", nargs=1, metavar=('FOLDER_PATH'))
 	parser.add_argument('--split', action='store_true', help=argparse.SUPPRESS)
-	parser.add_argument('--check_table', action='store_true', help=argparse.SUPPRESS)
+	#parser.add_argument('--check_table', action='store_true', help=argparse.SUPPRESS)
 	parser.add_argument('--print_downloads', action='store_true', help=argparse.SUPPRESS)
 	parser.add_argument('--print_downloads_text', action='store_true', help=argparse.SUPPRESS)
 	parser.add_argument('--store_in_tmp', action='store_true', help=argparse.SUPPRESS)
 	parser.add_argument('--time', nargs=1, type=int, metavar=('SECONDS'), help=argparse.SUPPRESS)
 
-	# Database Options
+	# Database OPTIONS
 	parser.add_argument('--print_users', help='Prints all users stored in your Database.',nargs='?', metavar=('ORDER'), const="x")
 	parser.add_argument('--print_likes', help='Prints all likes stored in your Database.', nargs=1, metavar=('OWNER'))
 	parser.add_argument('--print_renamed', help='Prints all the renames done', action='store_true')
@@ -657,9 +626,9 @@ if __name__== "__main__":
 	parser.add_argument('--update_status', help='Changes the status of the specified user',nargs=2, metavar=('USER_NAME', 'NEW_STATUS'))
 	#parser.add_argument('--rescan_user', help='Scans the user folder in order to update its Last_id field in the database.',nargs=1, metavar=('USER_NAME'))
 	#parser.add_argument('--rescan_all', help="Scans all users' folders in order to update their Last_id field in the database.", action='store_true')
-	parser.add_argument('--forced', help="", action='store_true')
+	#parser.add_argument('--forced', help="", action='store_true')
+	parser.add_argument('--deep_check', help="", action='store_true')
 	parser.add_argument('--check_again', help='Tries to download media from those users whose status match with the one provided',nargs=1, metavar=('STATUS'))
 
-	Options = parser.parse_args()
-
+	OPTIONS = parser.parse_args()
 	main()
